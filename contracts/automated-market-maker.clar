@@ -13,6 +13,24 @@
 ;;  - Administrative controls for emergency situations
 ;;  - Constant product market maker formula (x * y = k)
 
+;; Define the trait for fungible tokens
+(define-trait ft-trait
+    (
+        ;; Transfer from the caller to a new principal
+        (transfer (uint principal principal) (response bool uint))
+        ;; Get the token balance of owner
+        (get-balance (principal) (response uint uint))
+        ;; Get the total number of tokens
+        (get-total-supply () (response uint uint))
+        ;; Get the token decimals
+        (get-decimals () (response uint uint))
+        ;; Get the token name
+        (get-name () (response (string-ascii 32) uint))
+        ;; Get the token symbol
+        (get-symbol () (response (string-ascii 32) uint))
+    )
+)
+
 ;; Constants
 (define-constant CONTRACT-OWNER tx-sender)
 (define-constant ERR-NOT-AUTHORIZED (err u100))
@@ -23,6 +41,15 @@
 (define-constant ERR-SLIPPAGE-TOO-HIGH (err u105))
 (define-constant ERR-ZERO-LIQUIDITY (err u106))
 (define-constant PRECISION u1000000) ;; 6 decimal places for price calculations
+
+;; Helper Functions
+(define-private (mul (a uint) (b uint))
+    (* a b)
+)
+
+(define-private (min (a uint) (b uint))
+    (if (<= a b) a b)
+)
 
 ;; Data Variables
 (define-data-var protocol-fee-rate uint u3000) ;; 0.3% fee
@@ -101,18 +128,20 @@
 )
 
 ;; Public Functions
-(define-public (create-pool (token-x principal) (token-y principal))
+(define-public (create-pool (token-x <ft-trait>) (token-y <ft-trait>))
     (let
         (
             (pool-id (var-get total-pools))
+            (token-x-principal (contract-of token-x))
+            (token-y-principal (contract-of token-y))
         )
         (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
-        (asserts! (not (is-eq token-x token-y)) ERR-INVALID-POOL)
+        (asserts! (not (is-eq token-x-principal token-y-principal)) ERR-INVALID-POOL)
         
         (map-set pools pool-id
             {
-                token-x: token-x,
-                token-y: token-y,
+                token-x: token-x-principal,
+                token-y: token-y-principal,
                 reserve-x: u0,
                 reserve-y: u0,
                 total-shares: u0,
@@ -126,6 +155,8 @@
 
 (define-public (add-liquidity
     (pool-id uint)
+    (token-x <ft-trait>)
+    (token-y <ft-trait>)
     (amount-x uint)
     (amount-y uint)
     (min-shares uint)
@@ -133,12 +164,14 @@
     (let
         (
             (pool (unwrap! (map-get? pools pool-id) ERR-POOL-NOT-FOUND))
-            (token-x (get token-x pool))
-            (token-y (get token-y pool))
+            (token-x-principal (contract-of token-x))
+            (token-y-principal (contract-of token-y))
         )
         (asserts! (> amount-x u0) ERR-INVALID-AMOUNT)
         (asserts! (> amount-y u0) ERR-INVALID-AMOUNT)
         (asserts! (get active pool) ERR-POOL-NOT-FOUND)
+        (asserts! (is-eq token-x-principal (get token-x pool)) ERR-INVALID-POOL)
+        (asserts! (is-eq token-y-principal (get token-y pool)) ERR-INVALID-POOL)
         
         ;; Transfer tokens to pool
         (try! (contract-call? token-x transfer amount-x tx-sender (as-contract tx-sender)))
@@ -155,6 +188,8 @@
 
 (define-public (swap-exact-tokens
     (pool-id uint)
+    (token-in <ft-trait>)
+    (token-out <ft-trait>)
     (amount-in uint)
     (min-amount-out uint)
     (x-to-y bool)
@@ -162,13 +197,15 @@
     (let
         (
             (pool (unwrap! (map-get? pools pool-id) ERR-POOL-NOT-FOUND))
-            (input-token (if x-to-y (get token-x pool) (get token-y pool)))
-            (output-token (if x-to-y (get token-y pool) (get token-x pool)))
+            (token-in-principal (contract-of token-in))
+            (token-out-principal (contract-of token-out))
             (input-reserve (if x-to-y (get reserve-x pool) (get reserve-y pool)))
             (output-reserve (if x-to-y (get reserve-y pool) (get reserve-x pool)))
         )
         (asserts! (> amount-in u0) ERR-INVALID-AMOUNT)
         (asserts! (get active pool) ERR-POOL-NOT-FOUND)
+        (asserts! (is-eq token-in-principal (if x-to-y (get token-x pool) (get token-y pool))) ERR-INVALID-POOL)
+        (asserts! (is-eq token-out-principal (if x-to-y (get token-y pool) (get token-x pool))) ERR-INVALID-POOL)
         
         (let
             (
@@ -177,11 +214,11 @@
             (asserts! (>= amount-out min-amount-out) ERR-SLIPPAGE-TOO-HIGH)
             
             ;; Transfer input tokens to pool
-            (try! (contract-call? input-token transfer amount-in tx-sender (as-contract tx-sender)))
+            (try! (contract-call? token-in transfer amount-in tx-sender (as-contract tx-sender)))
             
             ;; Transfer output tokens to user
             (as-contract
-                (try! (contract-call? output-token transfer amount-out (as-contract tx-sender) tx-sender))
+                (try! (contract-call? token-out transfer amount-out (as-contract tx-sender) tx-sender))
             )
             
             ;; Update pool reserves
@@ -207,6 +244,8 @@
 
 (define-public (remove-liquidity
     (pool-id uint)
+    (token-x <ft-trait>)
+    (token-y <ft-trait>)
     (shares uint)
     (min-amount-x uint)
     (min-amount-y uint)
@@ -214,11 +253,15 @@
     (let
         (
             (pool (unwrap! (map-get? pools pool-id) ERR-POOL-NOT-FOUND))
+            (token-x-principal (contract-of token-x))
+            (token-y-principal (contract-of token-y))
             (provider-shares (unwrap! (get shares (map-get? liquidity-providers {pool-id: pool-id, provider: tx-sender})) ERR-INSUFFICIENT-BALANCE))
             (total-shares (get total-shares pool))
         )
         (asserts! (>= provider-shares shares) ERR-INSUFFICIENT-BALANCE)
         (asserts! (> shares u0) ERR-INVALID-AMOUNT)
+        (asserts! (is-eq token-x-principal (get token-x pool)) ERR-INVALID-POOL)
+        (asserts! (is-eq token-y-principal (get token-y pool)) ERR-INVALID-POOL)
         
         (let
             (
@@ -246,8 +289,8 @@
             ;; Transfer tokens back to provider
             (as-contract
                 (begin
-                    (try! (contract-call? (get token-x pool) transfer amount-x (as-contract tx-sender) tx-sender))
-                    (try! (contract-call? (get token-y pool) transfer amount-y (as-contract tx-sender) tx-sender))
+                    (try! (contract-call? token-x transfer amount-x (as-contract tx-sender) tx-sender))
+                    (try! (contract-call? token-y transfer amount-y (as-contract tx-sender) tx-sender))
                     (ok {amount-x: amount-x, amount-y: amount-y})
                 )
             )
@@ -289,10 +332,14 @@
             (pool (unwrap! (map-get? pools pool-id) ERR-POOL-NOT-FOUND))
         )
         (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
-        (map-set pools pool-id (merge pool {active: false}))
-        (ok true)
+        ;; Check if pool exists and is active
+        (asserts! (get active pool) ERR-POOL-NOT-FOUND)
+        ;; Update pool with checked data
+        (ok (map-set pools pool-id 
+            (merge pool {active: false})))
     )
 )
+
 
 (define-public (resume-pool (pool-id uint))
     (let
@@ -300,7 +347,10 @@
             (pool (unwrap! (map-get? pools pool-id) ERR-POOL-NOT-FOUND))
         )
         (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
-        (map-set pools pool-id (merge pool {active: true}))
-        (ok true)
+        ;; Check if pool exists and is inactive
+        (asserts! (not (get active pool)) ERR-POOL-NOT-FOUND)
+        ;; Update pool with checked data
+        (ok (map-set pools pool-id 
+            (merge pool {active: true})))
     )
 )
