@@ -23,3 +23,30 @@
 (define-constant ERR-SLIPPAGE-TOO-HIGH (err u105))
 (define-constant ERR-ZERO-LIQUIDITY (err u106))
 (define-constant PRECISION u1000000) ;; 6 decimal places for price calculations
+
+;; Data Variables
+(define-data-var protocol-fee-rate uint u3000) ;; 0.3% fee
+(define-data-var total-pools uint u0)
+
+;; Data Maps
+(define-map pools
+    uint
+    {
+        token-x: principal,
+        token-y: principal,
+        reserve-x: uint,
+        reserve-y: uint,
+        total-shares: uint,
+        active: bool
+    }
+)
+
+(define-map liquidity-providers
+    {pool-id: uint, provider: principal}
+    {shares: uint}
+)
+
+(define-map accumulated-fees
+    principal
+    uint
+)
