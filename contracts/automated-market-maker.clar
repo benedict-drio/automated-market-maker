@@ -254,3 +254,21 @@
         )
     )
 )
+
+;; Read-only functions
+(define-read-only (get-pool-info (pool-id uint))
+    (map-get? pools pool-id)
+)
+
+(define-read-only (get-provider-shares (pool-id uint) (provider principal))
+    (map-get? liquidity-providers {pool-id: pool-id, provider: provider})
+)
+
+(define-read-only (get-exchange-rate (pool-id uint))
+    (let
+        (
+            (pool (unwrap! (map-get? pools pool-id) ERR-POOL-NOT-FOUND))
+        )
+        (ok (/ (mul (get reserve-y pool) PRECISION) (get reserve-x pool)))
+    )
+)
