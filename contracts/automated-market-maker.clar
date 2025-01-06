@@ -272,3 +272,35 @@
         (ok (/ (mul (get reserve-y pool) PRECISION) (get reserve-x pool)))
     )
 )
+
+;; Administrative functions
+(define-public (set-protocol-fee (new-fee uint))
+    (begin
+        (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
+        (asserts! (<= new-fee PRECISION) ERR-INVALID-AMOUNT)
+        (var-set protocol-fee-rate new-fee)
+        (ok true)
+    )
+)
+
+(define-public (pause-pool (pool-id uint))
+    (let
+        (
+            (pool (unwrap! (map-get? pools pool-id) ERR-POOL-NOT-FOUND))
+        )
+        (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
+        (map-set pools pool-id (merge pool {active: false}))
+        (ok true)
+    )
+)
+
+(define-public (resume-pool (pool-id uint))
+    (let
+        (
+            (pool (unwrap! (map-get? pools pool-id) ERR-POOL-NOT-FOUND))
+        )
+        (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
+        (map-set pools pool-id (merge pool {active: true}))
+        (ok true)
+    )
+)
