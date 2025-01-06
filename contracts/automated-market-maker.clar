@@ -99,3 +99,56 @@
         (ok shares-to-mint)
     )
 )
+
+;; Public Functions
+(define-public (create-pool (token-x principal) (token-y principal))
+    (let
+        (
+            (pool-id (var-get total-pools))
+        )
+        (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
+        (asserts! (not (is-eq token-x token-y)) ERR-INVALID-POOL)
+        
+        (map-set pools pool-id
+            {
+                token-x: token-x,
+                token-y: token-y,
+                reserve-x: u0,
+                reserve-y: u0,
+                total-shares: u0,
+                active: true
+            }
+        )
+        (var-set total-pools (+ pool-id u1))
+        (ok pool-id)
+    )
+)
+
+(define-public (add-liquidity
+    (pool-id uint)
+    (amount-x uint)
+    (amount-y uint)
+    (min-shares uint)
+)
+    (let
+        (
+            (pool (unwrap! (map-get? pools pool-id) ERR-POOL-NOT-FOUND))
+            (token-x (get token-x pool))
+            (token-y (get token-y pool))
+        )
+        (asserts! (> amount-x u0) ERR-INVALID-AMOUNT)
+        (asserts! (> amount-y u0) ERR-INVALID-AMOUNT)
+        (asserts! (get active pool) ERR-POOL-NOT-FOUND)
+        
+        ;; Transfer tokens to pool
+        (try! (contract-call? token-x transfer amount-x tx-sender (as-contract tx-sender)))
+        (try! (contract-call? token-y transfer amount-y tx-sender (as-contract tx-sender)))
+        
+        ;; Mint LP tokens
+        (let
+            ((shares (unwrap! (mint-pool-tokens pool-id amount-x amount-y tx-sender) ERR-INVALID-AMOUNT)))
+            (asserts! (>= shares min-shares) ERR-SLIPPAGE-TOO-HIGH)
+            (ok shares)
+        )
+    )
+)
