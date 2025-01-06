@@ -152,3 +152,105 @@
         )
     )
 )
+
+(define-public (swap-exact-tokens
+    (pool-id uint)
+    (amount-in uint)
+    (min-amount-out uint)
+    (x-to-y bool)
+)
+    (let
+        (
+            (pool (unwrap! (map-get? pools pool-id) ERR-POOL-NOT-FOUND))
+            (input-token (if x-to-y (get token-x pool) (get token-y pool)))
+            (output-token (if x-to-y (get token-y pool) (get token-x pool)))
+            (input-reserve (if x-to-y (get reserve-x pool) (get reserve-y pool)))
+            (output-reserve (if x-to-y (get reserve-y pool) (get reserve-x pool)))
+        )
+        (asserts! (> amount-in u0) ERR-INVALID-AMOUNT)
+        (asserts! (get active pool) ERR-POOL-NOT-FOUND)
+        
+        (let
+            (
+                (amount-out (calculate-output-amount amount-in input-reserve output-reserve))
+            )
+            (asserts! (>= amount-out min-amount-out) ERR-SLIPPAGE-TOO-HIGH)
+            
+            ;; Transfer input tokens to pool
+            (try! (contract-call? input-token transfer amount-in tx-sender (as-contract tx-sender)))
+            
+            ;; Transfer output tokens to user
+            (as-contract
+                (try! (contract-call? output-token transfer amount-out (as-contract tx-sender) tx-sender))
+            )
+            
+            ;; Update pool reserves
+            (map-set pools pool-id
+                (merge pool
+                    (if x-to-y
+                        {
+                            reserve-x: (+ input-reserve amount-in),
+                            reserve-y: (- output-reserve amount-out)
+                        }
+                        {
+                            reserve-x: (- output-reserve amount-out),
+                            reserve-y: (+ input-reserve amount-in)
+                        }
+                    )
+                )
+            )
+            
+            (ok amount-out)
+        )
+    )
+)
+
+(define-public (remove-liquidity
+    (pool-id uint)
+    (shares uint)
+    (min-amount-x uint)
+    (min-amount-y uint)
+)
+    (let
+        (
+            (pool (unwrap! (map-get? pools pool-id) ERR-POOL-NOT-FOUND))
+            (provider-shares (unwrap! (get shares (map-get? liquidity-providers {pool-id: pool-id, provider: tx-sender})) ERR-INSUFFICIENT-BALANCE))
+            (total-shares (get total-shares pool))
+        )
+        (asserts! (>= provider-shares shares) ERR-INSUFFICIENT-BALANCE)
+        (asserts! (> shares u0) ERR-INVALID-AMOUNT)
+        
+        (let
+            (
+                (amount-x (/ (mul shares (get reserve-x pool)) total-shares))
+                (amount-y (/ (mul shares (get reserve-y pool)) total-shares))
+            )
+            (asserts! (>= amount-x min-amount-x) ERR-SLIPPAGE-TOO-HIGH)
+            (asserts! (>= amount-y min-amount-y) ERR-SLIPPAGE-TOO-HIGH)
+            
+            ;; Update provider shares
+            (map-set liquidity-providers
+                {pool-id: pool-id, provider: tx-sender}
+                {shares: (- provider-shares shares)}
+            )
+            
+            ;; Update pool
+            (map-set pools pool-id
+                (merge pool {
+                    reserve-x: (- (get reserve-x pool) amount-x),
+                    reserve-y: (- (get reserve-y pool) amount-y),
+                    total-shares: (- total-shares shares)
+                })
+            )
+            
+            ;; Transfer tokens back to provider
+            (as-contract
+                (begin
+                    (try! (contract-call? (get token-x pool) transfer amount-x (as-contract tx-sender) tx-sender))
+                    (try! (contract-call? (get token-y pool) transfer amount-y (as-contract tx-sender) tx-sender))
+                    (ok {amount-x: amount-x, amount-y: amount-y})
+                )
+            )
+        )
+    )
+)
